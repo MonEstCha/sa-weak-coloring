@@ -627,7 +627,6 @@ int main(int argc, char** argv) {
 	/* params */
 	string graph_name, rad_str = "1", heuristic = "wReachLeft", logID="log", schedule="exp";
 
-	int schedule_Start;
 	float start = 0.2, end = 1.4, slope = 0.006, nrSwaps = 20, rdVal_LB = 60.0;
 
 	int R;
@@ -845,28 +844,26 @@ int main(int argc, char** argv) {
 
 	trace << "#t,il,wcol,swaps,rdVal,prob" << endl;
 	trace << 1 << ",," << wcol << ",0,,0,0"<< endl;
-	float tempFactor_init = (float) n / (float) 10;
-	schedule_Start = max(2, (int) (start*n));
-	unsigned int schedule_End = end*n*10;
-	int schedule_Start_Init = schedule_Start;
+	float t_start = (float) n / (float) 10;
+	int ol_start = max(2, (int) (start*n));
+	unsigned int ol_end = end*n*10;
 
 	int tLast = 0;
 	int roundCt = 0, df=0;
-	//int rounds = n * 10;
-	float maxTempFactor = max(1, (int) (tempFactor_init * exp(-slope*schedule_Start)));
+	float t_max = max(1, (int) (t_start * exp(-slope*ol_start)));
 
-	int trialLim = 5, wcol_best = wcol, leftMin = n, rightMax = 0, iterationCt = 0, tempFactor = 0;
+	int trialLim = 5, wcol_best = wcol, leftMin = n, rightMax = 0, iterationCt = 0, t = 0;
 	descVec orderD_copy = orderD, orderD_rec = orderD;
 	vector<descVec> clusters_copy;
 	vector<int> where_in_order_copy = where_in_order, wio_rec = where_in_order, wreach_szs_copy = wreach_szs, order_copy = order, order_rec = order;
 
-	for(int t = schedule_Start; t < schedule_End; t++){ // schedule loop
+	for(int ol = ol_start; ol < ol_end; ol++){ // schedule loop
 		// get current temperature according to annealing schedule
 		if(schedule == "exp"){
-			tempFactor = max(1, (int) (tempFactor_init * exp(-slope*t)));
+			t = max(1, (int) (t_start * exp(-slope*ol)));
 		}
 		else{
-			tempFactor = log(t);
+			t = log(ol);
 		}
 		// trials to find a suitable neighbor
 		for(int il=0; il< trialLim; il++){ // trial loop
@@ -962,10 +959,10 @@ int main(int argc, char** argv) {
 			float prob = 0.0;
 			if(wcolInc){
 				if(schedule == "exp"){
-					prob = min(0.99, getProb_exp(tempFactor, wcolNorm, wcolNewNorm, maxTempFactor)*1.0);
+					prob = min(0.99, getProb_exp(t, wcolNorm, wcolNewNorm, t_max)*1.0);
 				}
 				else{
-					prob = min(0.99, getProb_log(tempFactor,wcolNorm, wcolNewNorm, n)*1.0);
+					prob = min(0.99, getProb_log(t,wcolNorm, wcolNewNorm, n)*1.0);
 				}
 			}
 			if(!wcolInc || (prob >= rdVal && prob > 0.0)){
@@ -975,10 +972,10 @@ int main(int argc, char** argv) {
 				where_in_order = where_in_order_copy, wreach_szs = wreach_szs_copy;
 				orderD = orderD_copy, order = order_copy, clusters = clusters_copy;
 				if(wcolInc && prob >= rdVal){
-					trace << t << "," << il << "," << wcol << "," << nrSwaps << "," << rdVal << "," << prob << endl;
+					trace << ol << "," << il << "," << wcol << "," << nrSwaps << "," << rdVal << "," << prob << endl;
 				}
 				else{
-					trace << t << "," << il << "," << wcol << "," << nrSwaps << endl;
+					trace << ol << "," << il << "," << wcol << "," << nrSwaps << endl;
 				}
 
 				break; // trial loop
@@ -988,8 +985,8 @@ int main(int argc, char** argv) {
 		} // end trial loop
 
 		//tLast = t;
-		if(t % int (end * n) == 0){
-			cout << "iteration: " << t << ", wcol: " << wcol << endl;
+		if(ol % int (end * n) == 0){
+			cout << "iteration: " << ol << ", wcol: " << wcol << endl;
 		}
 	} // end schedule loop
 
