@@ -1,7 +1,4 @@
-//SimAnneal_v1 exact
-
 #include <vector>
-#include <random>
 #include <unordered_set>
 #include <unordered_map>
 #include <fstream>
@@ -10,8 +7,14 @@
 #include <iterator>
 #include <iostream>
 #include <time.h>
+#include <chrono>
+#include <random>
+#include <boost/graph/random.hpp>
 #include <boost/config.hpp>
 #include <boost/graph/adjacency_list.hpp>
+#include <boost/graph/depth_first_search.hpp>
+#include <boost/graph/breadth_first_search.hpp>
+#include <boost/graph/two_bit_color_map.hpp>
 #include <boost/config/user.hpp>
 //#include "matplotlibcpp.h"
 #include "Headers.hpp"
@@ -19,8 +22,9 @@
 #include "FlagParser.hpp"
 #include "ReadTxt.hpp"
 
-// compile: c++ -I /opt/homebrew/Cellar/boost/1.78.0_1/include SimAnnealing_v1.cpp ReadTxt.cpp FilesOps.cpp FlagParser.cpp -o SimAnnealing_v1 -Ofast -std=c++14
-// execute: ./SimAnnealing_v1 --in=diseasome.csv --rad=4 --heur=none --logID=test
+// compile: c++ -I /opt/homebrew/Cellar/boost/1.78.0_1/include SimAnnealing_v2.cpp ReadTxt.cpp FilesOps.cpp FlagParser.cpp -o SimAnnealing_v2 -Ofast -std=c++14
+// including matplotlibcpp (not working):  c++ -I /opt/homebrew/Cellar/boost/1.78.0_1/include -I /Applications/Spyder.app/Contents/Resources/lib/python3.9/numpy/core/include -I /System/Library/Frameworks/Python.framework/Versions/2.7/include/python2.7 SimAnnealing.cpp ReadTxt.cpp FilesOps.cpp FlagParser.cpp -o SimAnnealing -Ofast -std=c++14
+// execute: ./SimAnnealing_v2 --in=yeast.csv --rad=1 --heur=wReachLeft
 
 using namespace boost;
 
@@ -28,7 +32,6 @@ using namespace boost;
 
 vector<int> _wreach_szs;
 vector<int> _deg;
-vector<int> _where_in_order;
 
 struct Vert {
   int id;
@@ -36,16 +39,6 @@ struct Vert {
   bool operator<(const Vert& oth) const {
     if (_wreach_szs[id] != _wreach_szs[oth.id]) { return _wreach_szs[id] > _wreach_szs[oth.id]; }
     if (_deg[id] != _deg[oth.id]) { return _deg[id] > _deg[oth.id]; }
-    return id < oth.id;
-  }
-};
-
-struct Vert_wio {
-  int id;
-  // overload "<" breaking ties by degrees
-  bool operator<(const Vert_wio& oth) const {
-    if (_wreach_szs[id] != _wreach_szs[oth.id]) { return _wreach_szs[id] > _wreach_szs[oth.id]; }
-    if (_where_in_order[id] != _where_in_order[oth.id]) {return _where_in_order[id] >_where_in_order[oth.id]; }
     return id < oth.id;
   }
 };
@@ -66,17 +59,13 @@ bool hasEnding (std::string const &fullString, std::string const &ending) {
     }
 }
 
-/**
- * Function outputs error on missing parameters and exits program
- */
 void Err() {
   cerr<<"Usage: ./SimAnnealing --in=graph.txtg --rad=radius [--o=output.txt]"<<endl;
   cerr<<"--h for help\n";
   exit(1);
 }
 
-/*************** Some convenient functions for debugging ***************/
-template < typename Graph>
+template < typename Graph, typename VertexNamePropertyMap >
 void printGraph(Graph g){
 	using v_it = typename graph_traits<Graph>::vertex_iterator;
 	cout << "vertices" << endl;
@@ -128,7 +117,6 @@ void printVec(const Graph& g, descVec vec, typename graph_traits< Graph >::verte
 	cout << "}" << endl;
 }
 
-
 /*
  * Function calculates the probability of taking a new solution even if it is worse than the current one
  * @param t, the current temperature
@@ -167,7 +155,6 @@ float getProb_exp(int t,float wcolOld, float wcolNew, int t_start){
  * Function calculates the vertices that contain the root vertex in their potential weakly R-reachable set for a given order
  * @param where_in_order, the position of the vertices in the order
  * @param phase_id, the current position to fill in the ordering
- * @param u, the root vertex
  * @return a vector containing all vertices that have root in their weakly R-reachable set
  */
 template < typename Graph, typename VertexNameMap >
@@ -251,7 +238,7 @@ vector<typename graph_traits<Graph>::vertex_descriptor> ComputeSingleCluster(con
 		}
 	}
 	return res;
-}
+} // Function seems to have side effects!!
 
 /**
  * Function calculates all weakly reachable sets for the given graph and order
@@ -281,6 +268,106 @@ vector<descVec> ComputeAllWReach(const Graph& graph,
 	return res;
 }
 
+/*template < class IncidenceGraph, class DFSVisitor, class ColorMap>
+void custom_depth_first_visit_impl(const IncidenceGraph& g,
+	typename graph_traits< IncidenceGraph >::vertex_descriptor u,
+	DFSVisitor& vis, // pass-by-reference here, important!
+	ColorMap color, int depth)
+{
+	BOOST_CONCEPT_ASSERT((IncidenceGraphConcept< IncidenceGraph >));
+	BOOST_CONCEPT_ASSERT((DFSVisitorConcept< DFSVisitor, IncidenceGraph >));
+	typedef typename graph_traits< IncidenceGraph >::vertex_descriptor Vertex;
+	BOOST_CONCEPT_ASSERT((ReadWritePropertyMapConcept< ColorMap, Vertex >));
+	typedef typename property_traits< ColorMap >::value_type ColorValue;
+	BOOST_CONCEPT_ASSERT((ColorValueConcept< ColorValue >));
+	typedef color_traits< ColorValue > Color;
+	typename graph_traits< IncidenceGraph >::out_edge_iterator ei, ei_end;
+
+	put(color, u, Color::gray());
+	vis.discover_vertex(u, g);
+
+	cout << "vertex: " << u << endl;
+
+	if (depth > 0)
+		for (boost::tie(ei, ei_end) = out_edges(u, g); ei != ei_end; ++ei)
+		{
+			Vertex v = target(*ei, g);
+			vis.examine_edge(*ei, g);
+			ColorValue v_color = get(color, v);
+			if (v_color == Color::white())
+			{
+				vis.tree_edge(*ei, g);
+				custom_depth_first_visit_impl(g, v, vis, color, depth-1);
+			}
+			else if (v_color == Color::gray())
+				vis.back_edge(*ei, g);
+			else
+				vis.forward_or_cross_edge(*ei, g);
+			call_finish_edge(vis, *ei, g);
+		}
+	put(color, u, Color::black());
+	vis.finish_vertex(u, g);
+}*/
+
+
+/**
+ * Function calculates weakly reachable sets for the given graph and order starting from the leftMin-th pos. in the order
+ * @return a vector with the weakly reachable sets
+ */
+template < typename Graph, typename VertexNameMap, typename descVec >
+void UpdateWReach(const Graph& graph, VertexNameMap name_map, vector<descVec>& clusters_copy, vector<descVec>& clusters,
+                                     vector<int>& where_in_order_copy, vector<int>& order_copy, int R,
+									 vector<int>& wreach_szs_copy, descVec& orderD_copy, vector<int>& toUpd, int ol_start, int il, int t) {
+
+	default_color_type c = white_color;
+
+	int n = num_vertices(graph);
+	typedef boost::queue<typename graph_traits<Graph>::vertex_descriptor> queue_t;
+	vector<int> last_vis(n + 1);
+	vector<int> dis(n + 1);
+	vector<int> is_forb_dummy;
+
+	int vName = 0;
+	for(auto val: toUpd){
+		if(val != 0){
+			// add vi to the wreach sets of all vertices that appear in the cluster of vi
+			//int vName = order_copy[i];
+			int pos = where_in_order_copy[vName]-1;
+			//cout << "pos: " << pos << endl;
+			typename graph_traits<Graph>::vertex_descriptor vD = orderD_copy[pos];
+
+			descVec clOld = clusters[vName];
+			descVec clNew;
+			if(R < 9){
+				clNew = ComputeSingleCluster(graph, where_in_order_copy, R, is_forb_dummy, last_vis, dis, vD, name_map, vName);
+			}else{
+				vector<default_color_type> color(num_vertices(graph));
+				bfs_visitor<null_visitor> vis;
+				vis.initialize_vertex(vD, graph);
+				queue_t Q;
+				clNew = custom_breadth_first_visit(graph, vD, Q, vis, make_iterator_property_map(&color[0], get(vertex_index, graph), c), R, where_in_order_copy, name_map);
+				//printVec(graph, clNew, vD, name_map, "clNew");
+			}
+			//cs_que_copy.erase({clOld.size(), vName});
+			clusters_copy[vName] = clNew;
+			//cs_que_copy.insert({clNew.size(), vName});
+			// decrease size of all wreach sets of vertices in clOld
+			for (typename graph_traits<Graph>::vertex_descriptor lostClV : clOld) {
+				int v = get(name_map, lostClV);
+				wreach_szs_copy[v]--;
+			}
+			// increase size of all wreach sets of vertices in clNew
+			for (typename graph_traits<Graph>::vertex_descriptor gainedClV : clNew) {
+				int v = get(name_map, gainedClV);
+				wreach_szs_copy[v]++;
+			}
+
+			// As a result the vertices in the intersection will keep their wreach size
+		}
+		vName++;
+	}
+
+}
 
 /**
  * Function calculates the sizes of the weakly reachable sets for the given graph and order
@@ -364,7 +451,7 @@ Graph PowerGraph(const Graph& graph, int R, std::unordered_set<int>& forb, Verte
 
 /**
  * Function computes the degeneracy ordering for the passed graph
- * @param graph, the graph to calculate the degeneracy for
+ * @param graph, the graph to calculate the degeneracy ordering for
  * @param R, the radius
  * @return a pair containing the degeneracy and the corresponding ordering
  */
@@ -451,6 +538,12 @@ pair<vector<int>, vector<int>> Degeneracy(const Graph& graph, int R, VertexNameM
 	return {removed_order, where_in_order};
 }
 
+/**
+ * Function computes the degeneracy ordering for the passed graph
+ * @param graph, the graph to calculate the degeneracy ordering for
+ * @param R, the radius
+ * @return a pair containing the degeneracy and the corresponding ordering
+ */
 template < typename Graph, typename VertexNameMap, typename descVec>
 pair<vector<int>, vector<int>> ByWReachLeft(const Graph& graph, int R, VertexNameMap name_map, descVec& orderD, descVec vD, vector<descVec>& clusters, vector<int>& where_in_order){
 
@@ -476,6 +569,7 @@ pair<vector<int>, vector<int>> ByWReachLeft(const Graph& graph, int R, VertexNam
 	    verts.insert({j});
 	}
 
+	chrono::duration<double> totalTime = chrono::duration<double>::zero();
 	for (int i = 1; i <= n; i++) {
 		// get next vertex to place in order: is first one of vertex set
 		// which is ordered already by size of weakly reachable sets
@@ -488,7 +582,10 @@ pair<vector<int>, vector<int>> ByWReachLeft(const Graph& graph, int R, VertexNam
 	    orderD.PB(vD[where_best]);
 	    order.PB(where_best);
 	    // calculate from which vertices it is weakly reachable (BFS)
+		//auto clCalcStart = chrono::high_resolution_clock::now();
 	    descVec cluster = ComputeSingleCluster(graph, where_in_order, R, is_forb_dummy, last_vis, dis, vD[where_best], name_map, i);
+		//auto clCalcEnd = chrono::high_resolution_clock::now();
+		//totalTime += clCalcEnd - clCalcStart;
 	    clusters[where_best] = cluster;
 
 	    for (typename graph_traits<Graph>::vertex_descriptor v: cluster) {
@@ -505,13 +602,14 @@ pair<vector<int>, vector<int>> ByWReachLeft(const Graph& graph, int R, VertexNam
 			verts.insert({x});
 		}
 	}
+	//cout << "Time elapsed total for cluster calc in ByWReachLeft: " << totalTime.count() << endl;
 	return {order, where_in_order};
 }
 
 
 /**
- * Function identifies the weak coloring number of current order
- * @param wreach_szs, the current weakly reachable set sizes
+ * Function identifies the weak coloring number of the passed graph and the given order
+ * and all the vertices with a size of their weakly reachable sets equal to it
  */
 int ComputeWcol(vector<int> wreach_szs) {
 	  int res = 0;
@@ -521,65 +619,109 @@ int ComputeWcol(vector<int> wreach_szs) {
 	  return res;
 }
 
-
-/*************************** Contributed functions **************************/
-/**
- * Function calculates new clusters for the given graph and order for all vertices in toUpd
- * @param toUpd, the datastructure to memorize if the cluster of the vertex at the given index needs to be updated
- */
-template < typename Graph, typename VertexNameMap, typename descVec >
-void UpdateWReach(const Graph& graph, VertexNameMap name_map, vector<descVec>& clusters_copy, vector<descVec>& clusters,
-                                     vector<int>& where_in_order_copy,
-									 vector<int>& order_copy, const vector<int>& order_orig, int R, vector<int>& wreach_szs_copy,
-									 descVec& orderD_copy, const descVec& orderD_orig, vector<int>& toUpd) {
-	int n = num_vertices(graph);
-
-	vector<int> last_vis(n + 1);
-	vector<int> dis(n + 1);
-	vector<int> is_forb_dummy;
-
-	int vName = 0;
-	for(auto val: toUpd){
-		if(val != 0){
-			// add vi to the wreach sets of all vertices that appear in the cluster of vi
-			int pos = where_in_order_copy[vName]-1;
-			typename graph_traits<Graph>::vertex_descriptor vD = orderD_copy[pos];
-
-			descVec clOld = clusters[vName];
-			descVec clNew = ComputeSingleCluster(graph, where_in_order_copy, R, is_forb_dummy, last_vis, dis, vD, name_map, vName);
-			clusters_copy[vName] = clNew;
-			// decrease size of all wreach sets of vertices in clOld
-			for (typename graph_traits<Graph>::vertex_descriptor lostClV : clOld) {
-				int v = get(name_map, lostClV);
-				wreach_szs_copy[v]--;
+template < typename VertexNameMap, typename descVec>
+int selectSwapPartner(int rightV, const vector<int>& order, vector<int>& where_in_order, const vector<descVec>& clusters, vector<int>& selected, VertexNameMap name_map){
+	for(int pos = 0; pos < where_in_order[rightV] - 1; pos++){
+		int leftV = order[pos];
+		if(!selected[leftV]){
+			int valid = true;
+			descVec cluster = clusters[leftV];
+			// leftV should keep its cluster after being moved to pos. of rightV
+			// thus each vertex in the cluster has to be greater than rightV with respect to the ordering
+			for(auto clEl: cluster){
+				int name = get(name_map, clEl);
+				if(where_in_order[name] <= where_in_order[rightV]-1){
+					valid = false;
+					break;
+				}
 			}
-			// increase size of all wreach sets of vertices in clNew
-			for (typename graph_traits<Graph>::vertex_descriptor gainedClV : clNew) {
-				int v = get(name_map, gainedClV);
-				wreach_szs_copy[v]++;
+			// leftV is suitable
+			if(valid){
+				selected[leftV] = 1;
+				return leftV;
 			}
-
 		}
-		vName++;
-		// As a result the vertices in the intersection will keep their wreach size
-
-
 	}
 
+	return -1;
 }
+
+/*************************** Contributed functions **************************/
+
+/**
+ * Function performs a customized Boost breadth-first-search
+ */
+template <class IncidenceGraph, class Buffer, class BFSVisitor, class ColorMap, typename VertexNameMap>
+vector<typename graph_traits<IncidenceGraph>::vertex_descriptor> custom_breadth_first_visit
+   (const IncidenceGraph& g,
+    typename graph_traits<IncidenceGraph>::vertex_descriptor s,
+    Buffer& Q, BFSVisitor vis, ColorMap color, int R, const vector<int>& where_in_order, VertexNameMap name_map)
+{
+	function_requires< IncidenceGraphConcept<IncidenceGraph> >();
+	typedef graph_traits<IncidenceGraph> GTraits;
+	typedef typename GTraits::vertex_descriptor Vertex;
+	typedef typename GTraits::edge_descriptor Edge;
+	function_requires< BFSVisitorConcept<BFSVisitor, IncidenceGraph> >();
+	function_requires< ReadWritePropertyMapConcept<ColorMap, Vertex> >();
+	typedef typename property_traits<ColorMap>::value_type ColorValue;
+	typedef color_traits<ColorValue> Color;
+	typename GTraits::out_edge_iterator ei, ei_end;
+
+	vector<int> dis(num_vertices(g));
+	vector<Vertex> cluster;
+
+	//cout << "vertex: " << s << endl;
+	put(color, s, Color::gray());
+	vis.discover_vertex(s, g);
+	Q.push(s);
+	dis[s] = 0;
+	while (! Q.empty()) {
+		Vertex u = Q.top(); Q.pop();
+		vis.examine_vertex(u, g);
+		if (dis[u] < R){
+			for (boost::tie(ei, ei_end) = out_edges(u, g); ei != ei_end; ++ei) {
+				Vertex v = target(*ei, g);
+				vis.examine_edge(*ei, g);
+				ColorValue v_color = get(color, v);
+				if (v_color == Color::white()) { // vertex is undiscovered
+
+					vis.tree_edge(*ei, g);
+					put(color, v, Color::gray());
+					vis.discover_vertex(v, g);
+					dis[v] = dis[u] + 1;
+					//cout << "vertex: " << v << ", dis: " << dis[v] << ", parent: " << u <<  endl;
+					if(where_in_order[get(name_map, v)] > where_in_order[get(name_map, s)])
+						Q.push(v);
+				} else {
+					vis.non_tree_edge(*ei, g);
+					if (v_color == Color::gray()) // vertex is discovered, but neighbors are not
+						vis.gray_target(*ei, g);
+					else
+						vis.black_target(*ei, g); // vertex is discovered and so are neighbors
+				}
+			} // end for
+		} // end if
+		put(color, u, Color::black());
+		cluster.PB(u);
+		vis.finish_vertex(u, g);
+	} // end while
+	return cluster;
+} // end custom_breadth_first_visit
 
 
 int main(int argc, char** argv) {
 
-	/******************************* DEFINTIONS ********************************/
 	auto startMain = chrono::high_resolution_clock::now();
+
+	/******************************* DEFINTIONS ********************************/
 
 	typedef adjacency_list< listS, // Store out-edges of each vertex in a std::list
 	vecS, // Store vertex set in a std::vector
 	undirectedS, // The graph is directed
 	property< vertex_name_t, int > // Add a vertex property
 	> UndirectedGraph;
-	typedef vector<graph_traits<UndirectedGraph>::vertex_descriptor> descVec;
+	typedef typename graph_traits<UndirectedGraph>::vertex_descriptor desc;
+	typedef vector<desc> descVec;
 
 	UndirectedGraph g; // use default constructor to create empty graph
 	int n = 0;
@@ -589,13 +731,14 @@ int main(int argc, char** argv) {
 	/******************************* GRAPH READ-IN ********************************/
 
 	if (argc == 2 && string(argv[1]) == "--h") {
-	  cerr<<"Usage: ./SimAnneal --in=graph.txtg --rad=radius --heur=heuristic [--sched=schedule] [--logID=id] [--o=output.txt] [--slope=slope] [--start=start] [--end=end]"<<endl;
+	  cerr<<"Usage: ./SimAnneal --in=graph.txtg --rad=radius --heur=heuristic [--sched=schedule] [--rd=rd] [--logID=id] [--o=output.txt] [--slope=slope] [--start=start] [--end=end]"<<endl;
 	  cerr<<"in - input graph\n";
 	  cerr<<"heur - heuristic to build start vertex ordering\n";
 	  cerr<<"rad - the radius for which to determine the weak coloring number\n";
 	  cerr<<"o - if you want to print order in not default output file\n";
 	  cerr<<"logID - id of the log file\n";
 	  cerr<<"sched - type of annealing schedule, can be either 'exp' for exponential or 'log' for logarithmic \n";
+	  cerr<<"rd - lower bound for random value to which the probability of moving to a worse solution is compared\n";
 	  cerr<<"slope, start, end - slope of annealing schedule, temperature range\n";
 	  return 1;
 	}
@@ -607,33 +750,28 @@ int main(int argc, char** argv) {
 	string graph_dir;
 	/* params */
 	string graph_name, rad_str = "1", heuristic = "wReachLeft", logID="log", schedule="exp";
-
-	float start = 0.2, end = 1.4, slope = 0.006, nrSwaps = 20, rdVal_LB = 60.0;
+	int ol_start;
+	float start = 0.3, end = 0.7, slope = 0.002, nrSwaps = 50, rdVal_LB = 60.0;
 
 	int R;
 	try {
 		FlagParser flag_parser;
 		flag_parser.ParseFlags(argc, argv);
-
-		try {
-			graph_file = flag_parser.GetFlag("in", true);
-		} catch (...) {
-			cerr<<"Error: Value for graph file required\n";
-		}
+		graph_file = flag_parser.GetFlag("in", true);
 
 		string cand_heuristic = flag_parser.GetFlag("heur", false);
 		if(!cand_heuristic.empty()){
 			heuristic = cand_heuristic;
 		}
 
-		string cand_rd = flag_parser.GetFlag("rd", false);
-		if(!cand_rd.empty()){
-			rdVal_LB = stof(cand_rd);
-		}
-
 		string cand_sched = flag_parser.GetFlag("sched", false);
 		if(!cand_sched.empty()){
 			schedule = cand_sched;
+		}
+
+		string cand_rd = flag_parser.GetFlag("rd", false);
+		if(!cand_rd.empty()){
+			rdVal_LB = stof(cand_rd);
 		}
 
 		string cand_slope = (flag_parser.GetFlag("slope", false));
@@ -656,10 +794,8 @@ int main(int argc, char** argv) {
 			nrSwaps = stof(cand_nrOfSwaps);
 		}
 
-		string cand_logID = flag_parser.GetFlag("logID", false);
-		if(!cand_logID.empty()){
-			logID = cand_logID;
-		}
+		logID = flag_parser.GetFlag("logID", true);
+		cout << "logID: " << logID << endl;
 
 		// set format
 		if(hasEnding(graph_file, format_txtg)){
@@ -694,11 +830,12 @@ int main(int argc, char** argv) {
 		}
 		flag_parser.Close();
 
-		log_file = graph_dir + "log/" + graph_name + "_simAnneal_v1" + "_" + logID + ".txt";
+		log_file = graph_dir + "log/" + graph_name + "_simAnneal_v2" + "_" + logID + ".txt";
 	} catch (string err) {
 		cerr<<"Error: "<<err<<endl;
 		Err();
 	}
+
 
 	pair<int,vector<pair<string, string>>> res = reader.ReadGraphEdges(graph_file, file_format);
 	n = res.st - 1;
@@ -706,7 +843,7 @@ int main(int argc, char** argv) {
 	descVec vD;
 	// add a dummy at pos. 0, since there is no shrinked id 0 and thus neither a corr. vertex descriptor
 	vD.push_back(-1);
-	typename graph_traits < UndirectedGraph >::vertex_descriptor u;
+	desc u;
 	for(int v=1; v <= n; v++){
 		// u = v-1, if the vertices of the input graph are denoted by integers
 		u = add_vertex(g);
@@ -723,6 +860,8 @@ int main(int argc, char** argv) {
 	}
 	cout << "edges added " << endl;
 
+	/*pair<UndirectedGraph::edge_iterator, UndirectedGraph::edge_iterator> es = edges(g);
+	copy(es.first, es.second, std::ostream_iterator<UndirectedGraph::edge_descriptor>{cout, "\n"});*/
 
 	/******************************* SETUP OF INITIAL ORDER ********************************/
 
@@ -757,7 +896,8 @@ int main(int argc, char** argv) {
 
 	}
 	else{
-		// initial order is a random order of the graphs vertices
+		// calculate the initial order, which simply is that of the vertex descriptor list
+		// along the way we also calculate the size of the weakly R-reachable sets
 		int count = 1;
 
 		if(heuristic == "random"){
@@ -772,7 +912,6 @@ int main(int argc, char** argv) {
 			}
 
 		}
-		// initial order simply is that of the vertex descriptor list
 		else{
 			order.clear();
 			graph_traits< UndirectedGraph >::vertex_iterator i, end;
@@ -784,7 +923,6 @@ int main(int argc, char** argv) {
 				count++;
 			}
 		}
-		// calculate the sizes of the weakly R-reachable sets
 		count = 1;
 		graph_traits< UndirectedGraph >::vertex_iterator ii, ii_end;
 		for(tie(ii, ii_end) = vertices(g); ii != ii_end; ++ii){
@@ -806,7 +944,12 @@ int main(int argc, char** argv) {
 	}
 
 	cout << "initial order done" << endl;
+	/*for(int j=0; j < order.size(); j++){
+		cout << order[j] << ", ";
+	}*/
+	cout << endl;
 	cout << "wcol at start: " << wcol << endl;
+	//cout << "check: wcol = "<< ComputeWcol(ComputeWreachSzs(g, where_in_order, R, name_map)) << endl;
 
 	int wcolStart = wcol;
 
@@ -816,7 +959,7 @@ int main(int argc, char** argv) {
 	/* initialize random seed: */
 	srand (time(NULL));
 
-	anneal_trace = graph_dir + "anneal_traces/" + graph_name + "_simAnneal_" + rad_str + "_" + heuristic +  "_trace.txt";
+	anneal_trace = graph_dir + "anneal_traces/" + graph_name + "_simAnneal_ssr_" + rad_str + "_trace.txt";
 	ofstream trace;
 	InitOfstream(trace, anneal_trace);
 
@@ -824,19 +967,27 @@ int main(int argc, char** argv) {
 	_log.open(log_file, fstream::app);
 
 	trace << "#t,il,wcol,swaps,rdVal,prob" << endl;
-	trace << 1 << ",," << wcol << ",0,,0,0"<< endl;
+	trace << 1 << ",," << wcol << ",0,,0"<< endl;
 	float t_start = (float) n / (float) 10;
 	// start and end of outer loop
-	int ol_start = max(2, (int) (start*n));
+	ol_start = max(2, (int) (start*n));
 	unsigned int ol_end = end*n*10;
 
+	int trialLim = 5, t=0;
 	int tLast = 0;
+
+	int wcol_best = wcol;
+
 	float t_max = max(1, (int) (t_start * exp(-slope*ol_start)));
 
-	int trialLim = 5, wcol_best = wcol, leftMin = n, rightMax = 0, iterationCt = 0, t = 0;
-	descVec orderD_copy = orderD, orderD_rec = orderD;
-	vector<descVec> clusters_copy;
-	vector<int> where_in_order_copy = where_in_order, wio_rec = where_in_order, wreach_szs_copy = wreach_szs, order_copy = order, order_rec = order;
+	vector<pair<int, int>> temp;
+	int j = 0;
+	for(auto el: wreach_szs){
+		temp.PB(make_pair(el, j));
+		j++;
+	}
+
+	sort(temp.begin(), temp.end());
 
 	for(int ol = ol_start; ol < ol_end; ol++){ // schedule loop
 		// get current temperature according to annealing schedule
@@ -846,27 +997,35 @@ int main(int argc, char** argv) {
 		else{
 			t = log(ol);
 		}
-		// trials to find a suitable neighbor
-		for(int il=0; il< trialLim; il++){ // trial loop
 
-			iterationCt++;
-			float rdVal = min(0.99, (rand() % 100 + rdVal_LB) * 0.01);
+		for(int il=0; il < trialLim; il++){ // trial loop
+			int leftMin = n, rightMax = 0;
+			// by mult. with (float) n/ (float) t, rdVal increases for lower temperatures
+			float rdVal = min(0.99, (rand() % 100 + rdVal_LB) * 0.01); // (float) n/ (float) t;
+			descVec orderD_copy = orderD;
+			vector<descVec> clusters_copy = clusters;
+			vector<int> where_in_order_copy = where_in_order, wreach_szs_copy = wreach_szs, order_copy = order;
 
-			orderD_copy = orderD;
-			clusters_copy = clusters;
-			where_in_order_copy = where_in_order, order_copy = order;
-			wreach_szs_copy = wreach_szs;
-
+			//auto it_left = cs_que_copy.begin();
 			bool wcolInc = false;
-			int left = 0, right = 0, leftMin = n, rightMax = 0;
+			int left = 0, right = 0;
 			vector<int> toUpd(n+1,0); vector<int> swapped(n+1,0);
+			int count = 1;
+
+			auto it_right = prev(temp.end(), 1);
+
 			for(int swapI=1; swapI < nrSwaps; swapI++){ // swap loop
 
-				// pick a random neighbor, i.e. randomly swap two vertices in the given order
+				// pick a random neighbor solution of the current solution, i.e.
+				// swap a vertex with a maximum wreach set and another vertex
 				// left and right denote the pos. of the vertices before the swap
-				left = rand() % n;
-				right = rand() % n;
-				if(left == right){
+				int rightV = order_copy[it_right->second];
+				right = where_in_order_copy[it_right->second] - 1;
+
+				//select left swap partner
+				int left = rand() % right;
+
+				if(left >= right){
 					continue;
 				}
 
@@ -879,10 +1038,9 @@ int main(int argc, char** argv) {
 
 				leftMin = min(leftMin, left);
 				rightMax = max(rightMax, right);
-				// swap in both representations of the order
+				// where_in_order has to be adapted alongside swapping
 				swap(orderD_copy[left], orderD_copy[right]);
 				swap(order_copy[left], order_copy[right]);
-
 				// update where_in_order_copy and collect vertices that are in cluster of swapped vertices
 				for(auto el: {left, right}){
 					where_in_order_copy[order_copy[el]] = el+1;
@@ -895,9 +1053,14 @@ int main(int argc, char** argv) {
 					}
 				}
 
+				// move to a later/earlier position
+				//it_left = next(it_left, 1);
+				it_right = prev(it_right, 1);
+				count++;
+
 			} // end swap loop
 
-			// collect vertices that are weakly r-reachable from swapped vertices
+			// collect vertices that are weakly reachable from swapped vertices
 			int v = 0;
 			for(auto val: toUpd){
 				int wio = where_in_order_copy[v];
@@ -920,23 +1083,22 @@ int main(int argc, char** argv) {
 
 			}
 
-
 			// do all updates
-			UpdateWReach(g, name_map, clusters_copy, clusters, where_in_order_copy, order_copy, order, R, wreach_szs_copy, orderD_copy, orderD, toUpd);
+
+			UpdateWReach(g, name_map, clusters_copy, clusters, where_in_order_copy, order_copy,
+					R, wreach_szs_copy, orderD_copy, toUpd, ol_start, il, t);
 
 			int wcolNew = ComputeWcol(wreach_szs_copy);
 
 			wcolInc = wcolNew > wcol;
-
 			if(wcolNew < wcol_best){
 				wcol_best = wcolNew;
-				//trace << t << "," << il << "," << wcol_best << "," << nrSwaps << endl;
 			}
 
 			// the difference between the old and new wcol increases approx. quadratically
-			float wcolNorm = (float) wcol/(float) (R*R);
-			float wcolNewNorm = (float) wcolNew/(float) (R*R);
-
+			// make use of distributivity: each value increases approx. quadratically
+			int wcolNorm = wcol/(R*R);
+			int wcolNewNorm = wcolNew/(R*R);
 			float prob = 0.0;
 			if(wcolInc){
 				if(schedule == "exp"){
@@ -946,21 +1108,30 @@ int main(int argc, char** argv) {
 					prob = min(0.99, getProb_log(t,wcolNorm, wcolNewNorm, n)*1.0);
 				}
 			}
-			if(!wcolInc || (prob >= rdVal && prob > 0.0)){
+
+			if(!wcolInc || prob >= rdVal){
 				// found better solution or accepting worse one
 				// update wcol and data structures
 				wcol = wcolNew;
-				where_in_order = where_in_order_copy, wreach_szs = wreach_szs_copy;
-				orderD = orderD_copy, order = order_copy, clusters = clusters_copy;
+				where_in_order = where_in_order_copy, wreach_szs = wreach_szs_copy, clusters = clusters_copy;
+				orderD = orderD_copy, order = order_copy;
+
+				temp.clear();
+				int j = 0;
+				for(auto el: wreach_szs){
+					temp.PB(make_pair(el, j));
+					j++;
+				}
+
+				sort(temp.begin(), temp.end());
+
 				if(wcolInc && prob >= rdVal){
-					trace << ol << "," << il << "," << wcol << "," << nrSwaps << "," << rdVal << "," << prob << endl;
+					trace << t << "," << il << "," << wcol << "," << nrSwaps << "," << rdVal << "," << prob << endl;
 				}
 				else{
-					trace << ol << "," << il << "," << wcol << "," << nrSwaps << endl;
+					trace << t << "," << il << "," << wcol << "," << nrSwaps << endl;
 				}
-
 				break; // trial loop
-
 			}
 
 		} // end trial loop
@@ -978,17 +1149,18 @@ int main(int argc, char** argv) {
 	}
 	ofstream out;
 	InitOfstream(out, output_file);
-	cout << "Order final" <<endl;
+	cout << "Order final!" <<endl;
 
 	cout << "wcol best: "<< wcol_best << endl;
 	// check consistency
 	vector<int> ws = ComputeWreachSzs(g, where_in_order, R, name_map, clusters);
-
 	cout << "check: wcol = "<< ComputeWcol(ws) << endl;
 	for(int v=1; v<=n; v++){
+		//cout << wreach_szs[v] << "/" << ws[v] << ", ";
 		assert(wreach_szs[v] == ws[v]);
 	}
 	for (int v : order) {
+		//cout<< v <<endl;
 		out << reader.GetOriginalFromMapped(v) << " ";
 	}
 	out << endl;
@@ -997,8 +1169,10 @@ int main(int argc, char** argv) {
 
 	auto endMain = chrono::high_resolution_clock::now();
 	chrono::duration<double> totalTimeMain = endMain - startMain;
-	_log << "   " << slope << ",   " << start << ",   " << end << ",   " << wcolStart << ",   " << wcol_best << ",   " << totalTimeMain.count() << ",   " << trialLim << ",   " << endl;
+
+	_log << "   " << slope << ",   " << start << ",   " << end << ",   " << wcolStart << ",   " << wcol_best << ",   " << totalTimeMain.count() << ",   " << trialLim << endl;
 	_log.close();
 
-	cout << "total time elapsed: " << totalTimeMain.count() << ", calls to updateWreach: " << iterationCt << endl;
+
+	cout << "total time elapsed: " << totalTimeMain.count() << endl;
 }
